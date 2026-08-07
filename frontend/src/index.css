@@ -4,17 +4,13 @@
 
 body {
     margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+    font-family: 'Poppins', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+h1, h2, h3, h4, h5, h6, button, input, select, textarea, span, a, p {
+    font-family: 'Poppins', sans-serif !important;
 }
 
 @layer base {
@@ -76,9 +72,11 @@ code {
 @layer base {
     * {
         @apply border-border;
+        font-family: 'Poppins', sans-serif !important;
     }
     body {
         @apply bg-background text-foreground;
+        font-family: 'Poppins', sans-serif !important;
     }
 }
 

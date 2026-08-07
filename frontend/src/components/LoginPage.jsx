@@ -21,8 +21,8 @@ export default function LoginPage() {
       await login(identifier, password);
       setLoginSuccess(true);
       setTimeout(() => {
-        navigate('/search');
-      }, 1200);
+        navigate('/dashboard');
+      }, 1000);
     } catch (err) {
       const detail = err.response?.data?.detail;
       const errorText = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : 'Invalid email or password');
