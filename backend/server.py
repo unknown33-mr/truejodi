@@ -363,8 +363,12 @@ def compute_compatibility(user: dict, candidate: dict) -> int:
 # ---------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------
-def serialize_user(user: dict, viewer: Optional[dict] = None) -> dict:
-    """Prepare user for API response. Enforces privacy for other viewers."""
+def serialize_user(user: dict, viewer: Optional[dict] = None, unlocked_contact: bool = False) -> dict:
+    """Prepare user for API response. Enforces privacy for other viewers.
+
+    unlocked_contact=True bypasses hideMobile/hideEmail/hideWhatsapp — used when
+    the viewer has an accepted interest with the target.
+    """
     if not user:
         return {}
     u = dict(user)
@@ -388,11 +392,11 @@ def serialize_user(user: dict, viewer: Optional[dict] = None) -> dict:
 
     # For other viewers, apply privacy
     priv = u.get("privacySettings") or {}
-    if priv.get("hideMobile", True):
+    if priv.get("hideMobile", True) and not unlocked_contact:
         u["mobile"] = None
-    if priv.get("hideEmail", True):
+    if priv.get("hideEmail", True) and not unlocked_contact:
         u["email"] = None
-    if priv.get("hideWhatsapp", True):
+    if priv.get("hideWhatsapp", True) and not unlocked_contact:
         u["whatsapp"] = None
     if priv.get("hidePhotos"):
         u["photos"] = []
@@ -727,6 +731,151 @@ async def report_user(target_id: str, payload: dict, current_user: dict = Depend
     return {"message": "Report submitted. Our team will review."}
 
 # ---------------------------------------------------------------------
+# Interests (Send Interest → Accept/Decline flow that unlocks contact)
+# ---------------------------------------------------------------------
+async def is_contact_unlocked(viewer_id: str, target_id: str) -> bool:
+    """Contact is unlocked between two users when an accepted interest
+    exists in either direction between them."""
+    if not viewer_id or not target_id or viewer_id == target_id:
+        return viewer_id == target_id
+    doc = await db.interests.find_one({
+        "status": "accepted",
+        "$or": [
+            {"from_user_id": viewer_id, "to_user_id": target_id},
+            {"from_user_id": target_id, "to_user_id": viewer_id},
+        ]
+    })
+    return doc is not None
+
+async def get_interest_status_map(viewer_id: str, target_ids: List[str]) -> Dict[str, dict]:
+    """Return per-target interest status keyed by target user_id:
+    { target_id: {status, direction, interest_id} }.
+    status: none | pending | accepted | declined
+    direction: sent | received (only meaningful for pending)."""
+    if not target_ids:
+        return {}
+    cursor = db.interests.find({
+        "$or": [
+            {"from_user_id": viewer_id, "to_user_id": {"$in": target_ids}},
+            {"to_user_id": viewer_id, "from_user_id": {"$in": target_ids}},
+        ]
+    })
+    out: Dict[str, dict] = {}
+    async for doc in cursor:
+        other = doc["to_user_id"] if doc["from_user_id"] == viewer_id else doc["from_user_id"]
+        direction = "sent" if doc["from_user_id"] == viewer_id else "received"
+        existing = out.get(other)
+        # Prefer accepted > pending > declined ordering
+        rank = {"accepted": 3, "pending": 2, "declined": 1}
+        if not existing or rank.get(doc["status"], 0) > rank.get(existing["status"], 0):
+            out[other] = {"status": doc["status"], "direction": direction, "interest_id": doc["id"]}
+    return out
+
+@api_router.post("/interests/send/{target_id}")
+async def send_interest(target_id: str, current_user: dict = Depends(get_current_user)):
+    viewer_id = current_user["id"]
+    if target_id == viewer_id:
+        raise HTTPException(status_code=400, detail="You cannot send interest to yourself")
+    target = await db.users.find_one({"_id": target_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    # Prevent duplicates: if a pending or accepted interest already exists in either direction, reject.
+    existing = await db.interests.find_one({
+        "status": {"$in": ["pending", "accepted"]},
+        "$or": [
+            {"from_user_id": viewer_id, "to_user_id": target_id},
+            {"from_user_id": target_id, "to_user_id": viewer_id},
+        ]
+    })
+    if existing:
+        return {"message": "Interest already exists", "interest": {
+            "id": existing["id"], "status": existing["status"],
+            "from_user_id": existing["from_user_id"], "to_user_id": existing["to_user_id"],
+        }}
+    doc = {
+        "id": str(uuid.uuid4()),
+        "from_user_id": viewer_id,
+        "to_user_id": target_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "responded_at": None,
+    }
+    await db.interests.insert_one(doc)
+    return {"message": "Interest sent", "interest": {
+        "id": doc["id"], "status": "pending",
+        "from_user_id": viewer_id, "to_user_id": target_id,
+    }}
+
+@api_router.get("/interests/received")
+async def list_received_interests(current_user: dict = Depends(get_current_user),
+                                   status_filter: Optional[str] = Query(None, alias="status")):
+    q: Dict[str, Any] = {"to_user_id": current_user["id"]}
+    if status_filter:
+        q["status"] = status_filter
+    interests = await db.interests.find(q).sort("created_at", -1).to_list(200)
+    # Attach sender snapshot
+    results = []
+    for i in interests:
+        sender = await db.users.find_one({"_id": i["from_user_id"]})
+        if not sender:
+            continue
+        unlocked = i["status"] == "accepted"
+        results.append({
+            "id": i["id"],
+            "status": i["status"],
+            "created_at": i["created_at"].isoformat() if isinstance(i.get("created_at"), datetime) else i.get("created_at"),
+            "responded_at": i["responded_at"].isoformat() if isinstance(i.get("responded_at"), datetime) else i.get("responded_at"),
+            "from_user": serialize_user(sender, viewer=current_user, unlocked_contact=unlocked),
+        })
+    return {"interests": results}
+
+@api_router.get("/interests/sent")
+async def list_sent_interests(current_user: dict = Depends(get_current_user),
+                              status_filter: Optional[str] = Query(None, alias="status")):
+    q: Dict[str, Any] = {"from_user_id": current_user["id"]}
+    if status_filter:
+        q["status"] = status_filter
+    interests = await db.interests.find(q).sort("created_at", -1).to_list(200)
+    results = []
+    for i in interests:
+        target = await db.users.find_one({"_id": i["to_user_id"]})
+        if not target:
+            continue
+        unlocked = i["status"] == "accepted"
+        results.append({
+            "id": i["id"],
+            "status": i["status"],
+            "created_at": i["created_at"].isoformat() if isinstance(i.get("created_at"), datetime) else i.get("created_at"),
+            "responded_at": i["responded_at"].isoformat() if isinstance(i.get("responded_at"), datetime) else i.get("responded_at"),
+            "to_user": serialize_user(target, viewer=current_user, unlocked_contact=unlocked),
+        })
+    return {"interests": results}
+
+@api_router.post("/interests/{interest_id}/respond")
+async def respond_interest(interest_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    action = (payload or {}).get("action", "").lower()
+    if action not in ("accept", "decline"):
+        raise HTTPException(status_code=400, detail="action must be 'accept' or 'decline'")
+    interest = await db.interests.find_one({"id": interest_id})
+    if not interest:
+        raise HTTPException(status_code=404, detail="Interest not found")
+    if interest["to_user_id"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You can only respond to interests sent to you")
+    if interest["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Interest is already {interest['status']}")
+    new_status = "accepted" if action == "accept" else "declined"
+    await db.interests.update_one(
+        {"id": interest_id},
+        {"$set": {"status": new_status, "responded_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": f"Interest {new_status}", "status": new_status}
+
+@api_router.get("/interests/status/{target_id}")
+async def get_interest_status(target_id: str, current_user: dict = Depends(get_current_user)):
+    m = await get_interest_status_map(current_user["id"], [target_id])
+    return m.get(target_id, {"status": "none", "direction": None, "interest_id": None})
+
+# ---------------------------------------------------------------------
 # Recommendations & Search
 # ---------------------------------------------------------------------
 def _opposite_gender(g: Optional[str]) -> Optional[str]:
@@ -762,10 +911,15 @@ async def get_recommendations(limit: int = 12, current_user: dict = Depends(get_
         scored.append((score, c))
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:limit]
+    target_ids = [c.get("_id") for _, c in top if c.get("_id")]
+    status_map = await get_interest_status_map(current_user["id"], target_ids)
     results = []
     for score, c in top:
-        u = serialize_user(c, viewer=current_user)
+        istate = status_map.get(c.get("_id"), {"status": "none"})
+        unlocked = istate["status"] == "accepted"
+        u = serialize_user(c, viewer=current_user, unlocked_contact=unlocked)
         u["compatibility"] = score
+        u["interest"] = istate
         results.append(u)
     return {"recommendations": results}
 
@@ -823,7 +977,7 @@ async def search_profiles(
     hf = _parse_height_inches(heightFrom)
     ht = _parse_height_inches(heightTo)
 
-    results = []
+    filtered = []
     for d in docs:
         priv = d.get("privacySettings") or {}
         if priv.get("profileVisibility") in ("Private", "Hidden"):
@@ -836,8 +990,18 @@ async def search_profiles(
                 continue
             if ht and ch > ht:
                 continue
-        s = serialize_user(d, viewer=current_user)
+        filtered.append(d)
+
+    target_ids = [d.get("_id") for d in filtered if d.get("_id")]
+    status_map = await get_interest_status_map(current_user["id"], target_ids)
+
+    results = []
+    for d in filtered:
+        istate = status_map.get(d.get("_id"), {"status": "none"})
+        unlocked = istate["status"] == "accepted"
+        s = serialize_user(d, viewer=current_user, unlocked_contact=unlocked)
         s["compatibility"] = compute_compatibility(current_user, d)
+        s["interest"] = istate
         results.append(s)
     results.sort(key=lambda x: x.get("compatibility", 0), reverse=True)
     return {"results": results[:limit], "count": len(results[:limit])}
@@ -850,7 +1014,11 @@ async def get_profile_detail(user_id: str, current_user: dict = Depends(get_curr
     u = await db.users.find_one({"_id": user_id})
     if not u:
         raise HTTPException(status_code=404, detail="Profile not found")
-    return serialize_user(u, viewer=current_user)
+    unlocked = await is_contact_unlocked(current_user["id"], user_id)
+    resp = serialize_user(u, viewer=current_user, unlocked_contact=unlocked)
+    m = await get_interest_status_map(current_user["id"], [user_id])
+    resp["interest"] = m.get(user_id, {"status": "none", "direction": None, "interest_id": None})
+    return resp
 
 # ---------------------------------------------------------------------
 # Legacy /profiles endpoint (kept for backwards compat with Home page)

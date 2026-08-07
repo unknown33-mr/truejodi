@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   User, ShieldCheck, Heart, Camera, Save, Trash2, Plus, Star,
-  MapPin, Briefcase, Users, Lock, Sparkles, CheckCircle2, ChevronRight, LogOut, AlertTriangle
+  MapPin, Briefcase, Users, Lock, Sparkles, CheckCircle2, ChevronRight, LogOut, AlertTriangle,
+  MailQuestion, Phone, Mail, Clock, Unlock, XCircle
 } from 'lucide-react';
 import axios from 'axios';
 import Navbar from '../components/Navbar';
@@ -28,6 +29,7 @@ const TABS = [
   { key: 'lifestyle',  label: 'Lifestyle',          icon: Sparkles },
   { key: 'family',     label: 'Family Details',     icon: Users },
   { key: 'preferences',label: 'Partner Preferences',icon: Star },
+  { key: 'interests',  label: 'Interests',          icon: MailQuestion },
   { key: 'gallery',    label: 'Photo Gallery',      icon: Camera },
   { key: 'privacy',    label: 'Privacy Settings',   icon: Lock },
 ];
@@ -43,7 +45,28 @@ export default function DashboardPage() {
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [receivedInterests, setReceivedInterests] = useState([]);
+  const [sentInterests, setSentInterests] = useState([]);
+  const [interestsLoading, setInterestsLoading] = useState(false);
+  const [interestSubTab, setInterestSubTab] = useState('received');
+  const [respondingId, setRespondingId] = useState(null);
   const fileInputRef = useRef(null);
+
+  const loadInterests = async () => {
+    setInterestsLoading(true);
+    try {
+      const [r, s] = await Promise.all([
+        axios.get(`${BACKEND_URL}/api/interests/received`),
+        axios.get(`${BACKEND_URL}/api/interests/sent`),
+      ]);
+      setReceivedInterests(r.data.interests || []);
+      setSentInterests(s.data.interests || []);
+    } catch (err) {
+      console.error('Failed to load interests', err);
+    } finally {
+      setInterestsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (user && user !== false) {
@@ -89,8 +112,9 @@ export default function DashboardPage() {
       axios.get(`${BACKEND_URL}/api/recommendations?limit=8`, )
         .then((r) => setRecommendations(r.data.recommendations || []))
         .catch(() => {});
+      loadInterests();
     }
-  }, [user, BACKEND_URL]);
+  }, [user, BACKEND_URL, refreshUser]);
 
   const completionPct = useMemo(() => {
     if (!formData) return 0;
@@ -207,6 +231,21 @@ export default function DashboardPage() {
     }
   };
 
+  const respondInterest = async (interestId, action) => {
+    setRespondingId(interestId);
+    try {
+      await axios.post(`${BACKEND_URL}/api/interests/${interestId}/respond`, { action });
+      flash('success', action === 'accept' ? 'Interest accepted — contact unlocked' : 'Interest declined');
+      await loadInterests();
+    } catch (err) {
+      flash('error', err.response?.data?.detail || 'Failed to respond');
+    } finally {
+      setRespondingId(null);
+    }
+  };
+
+  const pendingReceivedCount = receivedInterests.filter((i) => i.status === 'pending').length;
+
   const primaryPhoto = (formData.photos || []).find(p => p.is_primary) || (formData.photos || [])[0];
   const heroPhotoUrl = primaryPhoto
     ? photoUrl(primaryPhoto)
@@ -276,7 +315,17 @@ export default function DashboardPage() {
                     activeTab === t.key ? 'bg-rose-600 text-white shadow-md' : 'text-slate-700 hover:bg-rose-50'
                   }`}
                 >
-                  <t.icon className="w-4 h-4" /> {t.label}
+                  <t.icon className="w-4 h-4" /> <span className="flex-1">{t.label}</span>
+                  {t.key === 'interests' && pendingReceivedCount > 0 && (
+                    <span
+                      data-testid="interests-pending-badge"
+                      className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        activeTab === t.key ? 'bg-white text-rose-600' : 'bg-rose-600 text-white'
+                      }`}
+                    >
+                      {pendingReceivedCount}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -403,6 +452,59 @@ export default function DashboardPage() {
                   </Section>
                 )}
 
+                {activeTab === 'interests' && (
+                  <Section title="Interests" subtitle="Manage the interest invitations you have sent and received. Contact details unlock automatically when both members accept.">
+                    <div className="flex gap-2 mb-6 border-b border-rose-100 pb-3">
+                      <button type="button" onClick={() => setInterestSubTab('received')}
+                        data-testid="interests-received-tab"
+                        className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors ${
+                          interestSubTab === 'received' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                        }`}>
+                        <MailQuestion className="w-4 h-4" /> Received
+                        {pendingReceivedCount > 0 && (
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                            interestSubTab === 'received' ? 'bg-white text-rose-600' : 'bg-rose-600 text-white'
+                          }`}>{pendingReceivedCount}</span>
+                        )}
+                      </button>
+                      <button type="button" onClick={() => setInterestSubTab('sent')}
+                        data-testid="interests-sent-tab"
+                        className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors ${
+                          interestSubTab === 'sent' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                        }`}>
+                        <Heart className="w-4 h-4" /> Sent
+                      </button>
+                    </div>
+
+                    {interestsLoading ? (
+                      <p className="text-center text-slate-500 text-sm py-6">Loading interests...</p>
+                    ) : interestSubTab === 'received' ? (
+                      receivedInterests.length === 0 ? (
+                        <EmptyInterests text="You haven't received any interests yet. Complete your profile and add photos to attract better matches." />
+                      ) : (
+                        <div className="space-y-3">
+                          {receivedInterests.map((i) => (
+                            <InterestRow key={i.id} interest={i} otherUser={i.from_user} direction="received"
+                              onAccept={() => respondInterest(i.id, 'accept')}
+                              onDecline={() => respondInterest(i.id, 'decline')}
+                              busy={respondingId === i.id} />
+                          ))}
+                        </div>
+                      )
+                    ) : (
+                      sentInterests.length === 0 ? (
+                        <EmptyInterests text="You haven't sent any interests yet. Head to the Search page and send interests to profiles you like." />
+                      ) : (
+                        <div className="space-y-3">
+                          {sentInterests.map((i) => (
+                            <InterestRow key={i.id} interest={i} otherUser={i.to_user} direction="sent" />
+                          ))}
+                        </div>
+                      )
+                    )}
+                  </Section>
+                )}
+
                 {activeTab === 'gallery' && (
                   <Section title="Photo Gallery" subtitle={`Upload up to 3 profile photos. Currently: ${(formData.photos || []).length}/3.`}>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -491,7 +593,7 @@ export default function DashboardPage() {
                   </Section>
                 )}
 
-                {activeTab !== 'gallery' && activeTab !== 'privacy' && (
+                {activeTab !== 'gallery' && activeTab !== 'privacy' && activeTab !== 'interests' && (
                   <div className="pt-6 border-t border-slate-100 flex justify-end">
                     <button type="submit" data-testid="save-profile-btn" disabled={saving}
                       className="px-8 py-3.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white font-semibold rounded-xl shadow-md hover:from-rose-700 hover:to-rose-800 transition-all text-sm flex items-center gap-2 disabled:opacity-50">
@@ -664,3 +766,72 @@ function PrivacyToggle({ label, desc, value, onChange, testid }) {
     </label>
   );
 }
+
+function EmptyInterests({ text }) {
+  return (
+    <div className="text-center py-10 border-2 border-dashed border-rose-200 rounded-2xl" data-testid="interests-empty">
+      <MailQuestion className="w-10 h-10 text-rose-300 mx-auto mb-2" />
+      <p className="text-sm text-slate-500 max-w-md mx-auto">{text}</p>
+    </div>
+  );
+}
+
+function InterestStatusBadge({ status }) {
+  if (status === 'pending') {
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-semibold"><Clock className="w-3 h-3" /> Pending</span>;
+  }
+  if (status === 'accepted') {
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold"><Unlock className="w-3 h-3" /> Accepted</span>;
+  }
+  return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-semibold"><XCircle className="w-3 h-3" /> Declined</span>;
+}
+
+function InterestRow({ interest, otherUser, direction, onAccept, onDecline, busy }) {
+  const photo = (otherUser?.photos || [])[0];
+  const created = interest.created_at ? new Date(interest.created_at).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  return (
+    <div className="p-4 bg-rose-50/30 border border-rose-100 rounded-2xl flex flex-col sm:flex-row items-center gap-4" data-testid={`interest-row-${interest.id}`}>
+      <img
+        src={photo ? photoUrl(photo) : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=400'}
+        alt={otherUser?.fullName || 'Member'}
+        className="w-20 h-20 rounded-2xl object-cover border border-rose-200 shrink-0"
+      />
+      <div className="flex-1 min-w-0 text-center sm:text-left">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2 mb-1">
+          <h4 className="font-serif font-bold text-slate-900 text-base truncate">{otherUser?.fullName || 'Unknown'}, {otherUser?.age || '—'}</h4>
+          <InterestStatusBadge status={interest.status} />
+        </div>
+        <p className="text-[11px] text-rose-600 font-semibold truncate">{otherUser?.religion} • {otherUser?.community} • {otherUser?.motherTongue || '—'}</p>
+        <p className="text-[11px] text-slate-500 truncate">📍 {otherUser?.district || '—'}, {otherUser?.state || '—'} • 🎓 {otherUser?.education || '—'}</p>
+        {interest.status === 'accepted' && (
+          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-emerald-800" data-testid={`interest-contact-${interest.id}`}>
+            {otherUser?.mobile && <span className="flex items-center gap-1"><Phone className="w-3 h-3" /> {otherUser.mobile}</span>}
+            {otherUser?.email && <span className="flex items-center gap-1"><Mail className="w-3 h-3" /> {otherUser.email}</span>}
+          </div>
+        )}
+        <p className="text-[10px] text-slate-400 mt-1">Sent on {created}</p>
+      </div>
+      {direction === 'received' && interest.status === 'pending' && (
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={onAccept}
+            disabled={busy}
+            data-testid={`accept-interest-${interest.id}`}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl flex items-center gap-1 disabled:opacity-60"
+          >
+            <CheckCircle2 className="w-4 h-4" /> Accept
+          </button>
+          <button
+            onClick={onDecline}
+            disabled={busy}
+            data-testid={`decline-interest-${interest.id}`}
+            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center gap-1 disabled:opacity-60"
+          >
+            <XCircle className="w-4 h-4" /> Decline
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+

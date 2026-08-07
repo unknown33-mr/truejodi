@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, ShieldCheck, Phone, Mail, Eye, EyeOff, Heart, X, Sparkles } from 'lucide-react';
+import { Search, Filter, ShieldCheck, Phone, Mail, Heart, X, Sparkles, Lock, Unlock, Clock, MailQuestion, CheckCircle2, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
@@ -17,9 +17,9 @@ export default function SearchPage() {
   const [filters, setFilters] = useState(emptyFilters);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [unlockedContacts, setUnlockedContacts] = useState({});
   const [selectedProfile, setSelectedProfile] = useState(null);
-  const [interestSent, setInterestSent] = useState({});
+  const [interestBusy, setInterestBusy] = useState({});
+  const [toast, setToast] = useState(null);
   const { BACKEND_URL } = useAuth();
 
   const runSearch = useCallback(async () => {
@@ -39,11 +39,34 @@ export default function SearchPage() {
     }
   }, [BACKEND_URL, filters]);
 
-  useEffect(() => { runSearch(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { runSearch(); }, []);
+
+  const flash = (kind, text) => {
+    setToast({ kind, text });
+    setTimeout(() => setToast(null), 3500);
+  };
 
   const change = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
-  const toggleContact = (id) => setUnlockedContacts((p) => ({ ...p, [id]: !p[id] }));
-  const handleSendInterest = (id) => setInterestSent((p) => ({ ...p, [id]: true }));
+
+  const handleSendInterest = async (profile) => {
+    if (interestBusy[profile.id]) return;
+    setInterestBusy((p) => ({ ...p, [profile.id]: true }));
+    try {
+      const res = await axios.post(`${BACKEND_URL}/api/interests/send/${profile.id}`);
+      const newInterest = res.data.interest;
+      setProfiles((prev) => prev.map((p) => p.id === profile.id
+        ? { ...p, interest: { status: newInterest.status, direction: 'sent', interest_id: newInterest.id } }
+        : p));
+      if (selectedProfile && selectedProfile.id === profile.id) {
+        setSelectedProfile((sp) => ({ ...sp, interest: { status: newInterest.status, direction: 'sent', interest_id: newInterest.id } }));
+      }
+      flash('success', newInterest.status === 'accepted' ? 'Interest already accepted!' : 'Interest sent successfully');
+    } catch (err) {
+      flash('error', err.response?.data?.detail || 'Failed to send interest');
+    } finally {
+      setInterestBusy((p) => ({ ...p, [profile.id]: false }));
+    }
+  };
 
   return (
     <div className="min-h-screen bg-rose-50/30 flex flex-col text-slate-800" data-testid="search-page">
@@ -58,6 +81,20 @@ export default function SearchPage() {
           <h1 className="text-3xl font-serif font-bold text-slate-900">Find Compatible Profiles</h1>
           <p className="text-slate-600 text-sm mt-1">Advanced filters + weighted compatibility scoring, all real-time from the database.</p>
         </div>
+
+        {toast && (
+          <div
+            data-testid="search-toast"
+            className={`mb-4 p-4 rounded-2xl flex items-center gap-3 text-sm font-medium border ${
+              toast.kind === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-rose-50 border-rose-200 text-rose-700'
+            }`}
+          >
+            {toast.kind === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+            {toast.text}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
@@ -152,8 +189,12 @@ export default function SearchPage() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {profiles.map((profile) => {
-                  const isUnlocked = unlockedContacts[profile.id];
-                  const isInterested = interestSent[profile.id];
+                  const interest = profile.interest || { status: 'none' };
+                  const isAccepted = interest.status === 'accepted';
+                  const isPending = interest.status === 'pending';
+                  const isDeclined = interest.status === 'declined';
+                  const isReceived = interest.direction === 'received';
+                  const showContact = isAccepted && !!profile.mobile;
                   const photo = (profile.photos || [])[0];
                   return (
                     <div key={profile.id} data-testid={`profile-card-${profile.id}`}
@@ -188,24 +229,32 @@ export default function SearchPage() {
                             <p className="text-xs text-slate-500 italic pt-1 line-clamp-2">&ldquo;{profile.aboutMe}&rdquo;</p>
                           )}
 
-                          <div className="bg-rose-50/50 p-3 rounded-xl border border-rose-100 text-xs space-y-1">
+                          <div className={`p-3 rounded-xl border text-xs space-y-1 ${showContact ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50/50 border-rose-100'}`}>
                             <div className="flex items-center justify-between text-slate-700">
                               <span className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5 text-rose-600" /> Mobile:</span>
-                              <span className="font-mono font-semibold">
-                                {isUnlocked && profile.mobile ? profile.mobile : '+91 XXXXX XXXXX'}
+                              <span className="font-mono font-semibold" data-testid={`card-mobile-${profile.id}`}>
+                                {showContact ? profile.mobile : '+91 XXXXX XXXXX'}
                               </span>
                             </div>
                             <div className="flex items-center justify-between text-slate-700">
                               <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5 text-rose-600" /> Email:</span>
-                              <span className="font-mono font-semibold">
-                                {isUnlocked && profile.email ? profile.email : 'xxxxxx@example.com'}
+                              <span className="font-mono font-semibold" data-testid={`card-email-${profile.id}`}>
+                                {showContact ? profile.email : 'xxxxxx@example.com'}
                               </span>
                             </div>
-                            <button onClick={() => toggleContact(profile.id)} data-testid={`toggle-contact-btn-${profile.id}`}
-                              className="mt-2 w-full py-1.5 text-center bg-white border border-rose-200 text-rose-700 rounded-lg font-semibold hover:bg-rose-100 transition-colors flex items-center justify-center gap-1.5">
-                              {isUnlocked ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                              {isUnlocked ? 'Hide Contact' : (profile.mobile ? 'Show Contact' : 'Contact Hidden by User')}
-                            </button>
+                            <div className="mt-2 text-center text-[11px] font-semibold flex items-center justify-center gap-1.5" data-testid={`interest-state-${profile.id}`}>
+                              {isAccepted ? (
+                                <span className="text-emerald-700 flex items-center gap-1"><Unlock className="w-3.5 h-3.5" /> Contact unlocked — you both accepted</span>
+                              ) : isPending && isReceived ? (
+                                <span className="text-amber-700 flex items-center gap-1"><MailQuestion className="w-3.5 h-3.5" /> They sent you an interest — respond in Dashboard</span>
+                              ) : isPending ? (
+                                <span className="text-amber-700 flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Interest pending — awaiting their response</span>
+                              ) : isDeclined ? (
+                                <span className="text-slate-500 flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Interest declined</span>
+                              ) : (
+                                <span className="text-slate-500 flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Send interest to unlock contact</span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -215,14 +264,25 @@ export default function SearchPage() {
                           className="flex-1 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-xl text-xs transition-colors">
                           View Profile
                         </button>
-                        <button onClick={() => handleSendInterest(profile.id)} data-testid={`send-interest-btn-${profile.id}`}
+                        <button
+                          onClick={() => handleSendInterest(profile)}
+                          data-testid={`send-interest-btn-${profile.id}`}
+                          disabled={isPending || isAccepted || isDeclined || interestBusy[profile.id]}
                           className={`flex-1 py-2.5 font-semibold rounded-xl text-xs transition-all flex items-center justify-center gap-1 ${
-                            isInterested
+                            isAccepted
                               ? 'bg-emerald-600 text-white'
-                              : 'bg-gradient-to-r from-rose-600 to-rose-700 text-white hover:from-rose-700 hover:to-rose-800 shadow-sm'
+                              : isPending
+                                ? 'bg-amber-100 text-amber-800 cursor-not-allowed'
+                                : isDeclined
+                                  ? 'bg-slate-100 text-slate-500 cursor-not-allowed'
+                                  : 'bg-gradient-to-r from-rose-600 to-rose-700 text-white hover:from-rose-700 hover:to-rose-800 shadow-sm disabled:opacity-60'
                           }`}>
-                          <Heart className={`w-3.5 h-3.5 ${isInterested ? 'fill-white' : ''}`} />
-                          {isInterested ? 'Interest Sent' : 'Send Interest'}
+                          <Heart className={`w-3.5 h-3.5 ${isAccepted ? 'fill-white' : ''}`} />
+                          {isAccepted ? 'Match Accepted'
+                            : isPending && isReceived ? 'Awaiting Your Reply'
+                            : isPending ? 'Interest Sent'
+                            : isDeclined ? 'Declined'
+                            : (interestBusy[profile.id] ? 'Sending...' : 'Send Interest')}
                         </button>
                       </div>
                     </div>
@@ -299,10 +359,10 @@ export default function SearchPage() {
                 </Block>
               )}
 
-              <div className="bg-rose-50 p-4 rounded-xl border border-rose-200 space-y-2">
+              <div className={`p-4 rounded-xl border space-y-2 ${selectedProfile.interest?.status === 'accepted' ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'}`}>
                 <h5 className="font-semibold text-slate-900 text-xs uppercase tracking-wider text-rose-700">Contact</h5>
-                <p className="flex items-center gap-2">📱 <strong>Mobile:</strong> <span className="font-mono">{selectedProfile.mobile || 'Hidden by user'}</span></p>
-                <p className="flex items-center gap-2">✉️ <strong>Email:</strong> <span className="font-mono">{selectedProfile.email || 'Hidden by user'}</span></p>
+                <p className="flex items-center gap-2">📱 <strong>Mobile:</strong> <span className="font-mono">{selectedProfile.mobile || 'Locked — send interest to reveal'}</span></p>
+                <p className="flex items-center gap-2">✉️ <strong>Email:</strong> <span className="font-mono">{selectedProfile.email || 'Locked — send interest to reveal'}</span></p>
               </div>
             </div>
 
@@ -311,10 +371,46 @@ export default function SearchPage() {
                 className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-colors">
                 Close
               </button>
-              <button onClick={() => { handleSendInterest(selectedProfile.id); setSelectedProfile(null); }}
-                className="flex-1 py-3 bg-gradient-to-r from-rose-600 to-rose-700 text-white font-semibold rounded-xl text-sm shadow-md hover:from-rose-700 hover:to-rose-800 transition-all flex items-center justify-center gap-2">
-                <Heart className="w-4 h-4 fill-white" /> Send Interest
-              </button>
+              {(() => {
+                const ist = selectedProfile.interest || { status: 'none' };
+                if (ist.status === 'accepted') {
+                  return (
+                    <div className="flex-1 py-3 bg-emerald-600 text-white font-semibold rounded-xl text-sm text-center flex items-center justify-center gap-2" data-testid="modal-interest-accepted">
+                      <Unlock className="w-4 h-4" /> Contact Unlocked
+                    </div>
+                  );
+                }
+                if (ist.status === 'pending' && ist.direction === 'received') {
+                  return (
+                    <div className="flex-1 py-3 bg-amber-100 text-amber-800 font-semibold rounded-xl text-sm text-center flex items-center justify-center gap-2" data-testid="modal-interest-pending-received">
+                      <MailQuestion className="w-4 h-4" /> Respond in Dashboard
+                    </div>
+                  );
+                }
+                if (ist.status === 'pending') {
+                  return (
+                    <div className="flex-1 py-3 bg-amber-100 text-amber-800 font-semibold rounded-xl text-sm text-center flex items-center justify-center gap-2" data-testid="modal-interest-pending-sent">
+                      <Clock className="w-4 h-4" /> Interest Pending
+                    </div>
+                  );
+                }
+                if (ist.status === 'declined') {
+                  return (
+                    <div className="flex-1 py-3 bg-slate-100 text-slate-500 font-semibold rounded-xl text-sm text-center" data-testid="modal-interest-declined">
+                      Interest Declined
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    onClick={() => handleSendInterest(selectedProfile)}
+                    disabled={interestBusy[selectedProfile.id]}
+                    data-testid="modal-send-interest-btn"
+                    className="flex-1 py-3 bg-gradient-to-r from-rose-600 to-rose-700 text-white font-semibold rounded-xl text-sm shadow-md hover:from-rose-700 hover:to-rose-800 transition-all flex items-center justify-center gap-2 disabled:opacity-60">
+                    <Heart className="w-4 h-4 fill-white" /> {interestBusy[selectedProfile.id] ? 'Sending...' : 'Send Interest'}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>
