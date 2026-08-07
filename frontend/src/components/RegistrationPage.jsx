@@ -1,29 +1,32 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Heart, ShieldCheck, Sparkles, UserCheck } from 'lucide-react';
+import { Heart, UserCheck } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import { useAuth } from '../context/AuthContext';
 
 export default function RegistrationPage() {
   const [submitted, setSubmitted] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [formData, setFormData] = useState({
     profileFor: 'Self',
     gender: 'Female',
     fullName: '',
-    dob: '',
-    age: '26',
+    dob: '2000-01-01',
+    age: 26,
     religion: 'Hindu',
     community: 'Brahmin',
     education: 'B.Tech / MBA',
     occupation: 'Software Engineer',
     state: 'Maharashtra',
     district: 'Mumbai',
-    mobile: '',
+    mobile: '9876543210',
     email: '',
     password: '',
     confirmPassword: ''
   });
 
+  const { register } = useAuth();
   const navigate = useNavigate();
 
   const handleChange = (e) => {
@@ -31,12 +34,27 @@ export default function RegistrationPage() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitted(true);
-    setTimeout(() => {
-      navigate('/search');
-    }, 2000);
+    setErrorMsg();
+    if (formData.password !== formData.confirmPassword) {
+      setErrorMsg('Passwords do not match');
+      return;
+    }
+    try {
+      await register({
+        ...formData,
+        age: parseInt(formData.age) || 25
+      });
+      setSubmitted(true);
+      setTimeout(() => {
+        navigate('/search');
+      }, 2000);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const errorText = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : 'Registration failed');
+      setErrorMsg(errorText);
+    }
   };
 
   return (
@@ -52,8 +70,14 @@ export default function RegistrationPage() {
               <Heart className="w-7 h-7 fill-white text-white" />
             </div>
             <h1 className="text-3xl font-serif font-bold text-slate-900">Begin Your Matrimony Journey</h1>
-            <p className="text-sm text-rose-600 font-medium mt-1">Create your verified royal profile in under 3 minutes</p>
+            <p className="text-sm text-rose-600 font-medium mt-1">Create your verified royal profile with JWT security</p>
           </div>
+
+          {errorMsg && (
+            <div className="mb-6 bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-xl text-xs" data-testid="reg-error-alert">
+              {errorMsg}
+            </div>
+          )}
 
           {submitted ? (
             <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-8 rounded-3xl text-center space-y-4 animate-fadeIn">
@@ -62,7 +86,7 @@ export default function RegistrationPage() {
               </div>
               <h2 className="text-2xl font-serif font-bold">Registration Successful!</h2>
               <p className="text-sm max-w-md mx-auto">
-                Welcome to Truejodi, <strong>{formData.fullName || 'Member'}</strong>! Your profile ID has been generated successfully. Redirecting you to search matches...
+                Welcome to Truejodi, <strong>{formData.fullName || 'Member'}</strong>! Your account has been securely created. Redirecting to search matches...
               </p>
             </div>
           ) : (

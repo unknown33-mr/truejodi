@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Search, Filter, ShieldCheck, Phone, Mail, Eye, EyeOff, Heart, CheckCircle2, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Filter, ShieldCheck, Phone, Mail, Eye, EyeOff, Heart, X } from 'lucide-react';
+import axios from 'axios';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
-import { MOCK_PROFILES } from '../mock';
+import { useAuth } from '../context/AuthContext';
 
 export default function SearchPage() {
   const [genderFilter, setGenderFilter] = useState('All');
@@ -15,10 +16,29 @@ export default function SearchPage() {
   const [stateFilter, setStateFilter] = useState('');
   const [districtFilter, setDistrictFilter] = useState('');
 
+  const [profiles, setProfiles] = useState([]);
+  const [loadingProfiles, setLoadingProfiles] = useState(true);
+
   // Unlocked contact states for mock interaction
   const [unlockedContacts, setUnlockedContacts] = useState({});
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [interestSent, setInterestSent] = useState({});
+  const { BACKEND_URL } = useAuth();
+
+  useEffect(() => {
+    fetchProfiles();
+  }, []);
+
+  const fetchProfiles = async () => {
+    try {
+      const res = await axios.get(`${BACKEND_URL}/api/profiles`, { withCredentials: true });
+      setProfiles(res.data);
+    } catch (err) {
+      console.error("Failed to fetch profiles", err);
+    } finally {
+      setLoadingProfiles(false);
+    }
+  };
 
   const toggleContact = (id) => {
     setUnlockedContacts((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -29,7 +49,7 @@ export default function SearchPage() {
   };
 
   // Filter logic
-  const filteredProfiles = MOCK_PROFILES.filter((profile) => {
+  const filteredProfiles = profiles.filter((profile) => {
     if (genderFilter !== 'All' && profile.gender !== genderFilter) return false;
     if (profile.age < parseInt(ageFrom || 18) || profile.age > parseInt(ageTo || 60)) return false;
     if (religionFilter !== 'All' && profile.religion !== religionFilter) return false;
@@ -50,7 +70,7 @@ export default function SearchPage() {
         {/* Page Title */}
         <div className="mb-8">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-100 text-rose-700 text-xs font-semibold uppercase tracking-wider mb-2">
-            Matchmaking Explorer
+            Matchmaking Explorer (MongoDB Connected)
           </div>
           <h1 className="text-3xl font-serif font-bold text-slate-900">Find Compatible Profiles</h1>
           <p className="text-slate-600 text-sm mt-1">Use advanced filters to explore verified matches tailored to your preferences.</p>
@@ -217,14 +237,18 @@ export default function SearchPage() {
           <div className="lg:col-span-3 space-y-6" data-testid="search-results-section">
             <div className="flex items-center justify-between bg-white px-6 py-4 rounded-2xl border border-rose-100 shadow-sm">
               <p className="text-xs font-semibold text-slate-600">
-                Showing <span className="text-rose-600 font-bold">{filteredProfiles.length}</span> verified matches
+                Showing <span className="text-rose-600 font-bold">{filteredProfiles.length}</span> verified matches from MongoDB
               </p>
               <div className="text-xs text-slate-500">
                 Contact numbers hidden for privacy
               </div>
             </div>
 
-            {filteredProfiles.length === 0 ? (
+            {loadingProfiles ? (
+              <div className="bg-white p-12 rounded-3xl border border-rose-100 text-center text-slate-500 text-sm">
+                Loading profiles from backend database...
+              </div>
+            ) : filteredProfiles.length === 0 ? (
               <div className="bg-white p-12 rounded-3xl border border-rose-100 text-center space-y-3">
                 <Search className="w-12 h-12 text-rose-300 mx-auto" />
                 <h3 className="font-serif font-bold text-slate-900 text-lg">No Profiles Found</h3>
@@ -246,7 +270,7 @@ export default function SearchPage() {
                         {/* Top Photo & ID Banner */}
                         <div className="relative h-60 overflow-hidden">
                           <img
-                            src={profile.photo}
+                            src={profile.photo || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=600"}
                             alt={profile.name}
                             className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
                           />
@@ -355,7 +379,7 @@ export default function SearchPage() {
 
             <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-start border-b border-rose-100 pb-6 mb-6">
               <img
-                src={selectedProfile.photo}
+                src={selectedProfile.photo || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=600"}
                 alt={selectedProfile.name}
                 className="w-32 h-32 rounded-2xl object-cover shadow-md"
               />

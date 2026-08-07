@@ -4,16 +4,19 @@ import HomePage from './components/HomePage';
 import LoginPage from './components/LoginPage';
 import RegistrationPage from './components/RegistrationPage';
 import SearchPage from './components/SearchPage';
+import { AuthProvider } from './context/AuthContext';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegistrationPage />} />
-        <Route path="/search" element={<SearchPage />} />
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegistrationPage />} />
+          <Route path="/search" element={<SearchPage />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

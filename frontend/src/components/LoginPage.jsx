@@ -1,22 +1,33 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Heart, Lock, Mail, Phone, ArrowRight, ShieldCheck, Sparkles } from 'lucide-react';
+import { Heart, Lock, Mail, ShieldCheck } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import { useAuth } from '../context/AuthContext';
 
 export default function LoginPage() {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [loginSuccess, setLoginSuccess] = useState(false);
+  const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    setLoginSuccess(true);
-    setTimeout(() => {
-      navigate('/search');
-    }, 1500);
+    setErrorMsg('');
+    try {
+      await login(identifier, password);
+      setLoginSuccess(true);
+      setTimeout(() => {
+        navigate('/search');
+      }, 1200);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const errorText = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : 'Invalid email or password');
+      setErrorMsg(errorText);
+    }
   };
 
   return (
@@ -42,6 +53,12 @@ export default function LoginPage() {
             </div>
           ) : (
             <form onSubmit={handleLogin} className="space-y-5" data-testid="login-form">
+              {errorMsg && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs" data-testid="login-error-alert">
+                  {errorMsg}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                   Mobile Number or Email

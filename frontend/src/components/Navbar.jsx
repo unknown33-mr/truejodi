@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Heart, Search, User, Menu, X, ShieldCheck, PhoneCall, Sparkles } from 'lucide-react';
+import { Heart, Search, User, Menu, X, ShieldCheck, LogOut } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const location = useLocation();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
 
   const isActive = (path) => location.pathname === path;
 
@@ -53,20 +56,42 @@ export default function Navbar() {
 
           {/* Right CTA Actions */}
           <div className="hidden md:flex items-center gap-4">
-            <Link
-              to="/login"
-              data-testid="nav-login-btn"
-              className="px-5 py-2.5 text-sm font-semibold text-rose-700 hover:text-rose-800 transition-colors"
-            >
-              Login
-            </Link>
-            <Link
-              to="/register"
-              data-testid="nav-register-btn"
-              className="px-6 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-rose-700 rounded-full shadow-md hover:shadow-lg hover:from-rose-700 hover:to-rose-800 transition-all transform hover:-translate-y-0.5"
-            >
-              Register Free
-            </Link>
+            {user && user !== false ? (
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <p className="text-xs font-bold text-slate-900">{user.fullName || user.email}</p>
+                  <p className="text-[10px] text-rose-600 font-medium capitalize">{user.role || 'Member'}</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    await logout();
+                    navigate('/login');
+                  }}
+                  data-testid="nav-logout-btn"
+                  className="p-2 text-rose-700 hover:text-rose-900 bg-rose-50 hover:bg-rose-100 rounded-full transition-colors"
+                  title="Logout"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  data-testid="nav-login-btn"
+                  className="px-5 py-2.5 text-sm font-semibold text-rose-700 hover:text-rose-800 transition-colors"
+                >
+                  Login
+                </Link>
+                <Link
+                  to="/register"
+                  data-testid="nav-register-btn"
+                  className="px-6 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-rose-700 rounded-full shadow-md hover:shadow-lg hover:from-rose-700 hover:to-rose-800 transition-all transform hover:-translate-y-0.5"
+                >
+                  Register Free
+                </Link>
+              </>
+            )}
           </div>
 
           {/* Mobile Menu Button */}
@@ -97,22 +122,37 @@ export default function Navbar() {
             </Link>
           ))}
           <div className="pt-4 border-t border-slate-100 flex flex-col gap-2.5">
-            <Link
-              to="/login"
-              onClick={() => setMobileMenuOpen(false)}
-              className="w-full text-center py-2.5 text-sm font-semibold text-rose-700 border border-rose-200 rounded-full hover:bg-rose-50 transition-colors"
-              data-testid="mobile-nav-login"
-            >
-              Login
-            </Link>
-            <Link
-              to="/register"
-              onClick={() => setMobileMenuOpen(false)}
-              className="w-full text-center py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-rose-700 rounded-full shadow-md"
-              data-testid="mobile-nav-register"
-            >
-              Register Free
-            </Link>
+            {user && user !== false ? (
+              <button
+                onClick={async () => {
+                  await logout();
+                  setMobileMenuOpen(false);
+                  navigate('/login');
+                }}
+                className="w-full text-center py-2.5 text-sm font-semibold text-white bg-rose-600 rounded-full shadow-md"
+              >
+                Logout ({user.fullName || user.email})
+              </button>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-full text-center py-2.5 text-sm font-semibold text-rose-700 border border-rose-200 rounded-full hover:bg-rose-50 transition-colors"
+                  data-testid="mobile-nav-login"
+                >
+                  Login
+                </Link>
+                <Link
+                  to="/register"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-full text-center py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-rose-700 rounded-full shadow-md"
+                  data-testid="mobile-nav-register"
+                >
+                  Register Free
+                </Link>
+              </>
+            )}
           </div>
         </div>
       )}
