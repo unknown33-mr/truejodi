@@ -1,45 +1,45 @@
-# PRD - Truejodi Matrimony (Phase-1)
+# Truejodi Matrimony — Product Requirements & Status
 
-## Original Problem Statement
-Truejodi Matrimony Phase-1: Professional frontend matrimony platform with Home Page, Login Page, Registration Page, and Search Page (UI Only, mock state).
+## Original Problem Statement (Phase-2)
+Continue Phase-2 for the existing Truejodi Matrimony full-stack app: redirect login to /dashboard, build a complete editable dashboard, photo upload/delete/primary (Emergent Object Storage), weighted compatibility recommendations, advanced search filters, connect everything to MongoDB, keep the Poppins font globally, and no dummy data.
 
-## User Personas
-1. **Eligible Baches / Brides**: Looking for verified life partners matching community, education, and location preferences.
-2. **Parents & Families**: Searching for secure, traditional yet modern matrimonial alliances with protected contact details.
+## Architecture
+- Frontend: React (Vite), Tailwind, React Router, Lucide-react. Auth via Bearer JWT in localStorage.
+- Backend: FastAPI + Motor (MongoDB), bcrypt + PyJWT. Emergent Object Storage for photos.
 
-## Core Requirements (Static & Mock)
-- **Tech Stack**: React, Vite, Tailwind CSS, React Router.
-- **Color Theme**: Soft Rose & Gold (Traditional Indian matrimony feel with subtle rose and gold gradients).
-- **Pages**:
-  1. **Home Page**: Top Header, Navigation, Hero Banner with Couple Image, Search Partner & Register Now buttons, About Platform, How It Works (3 steps), Features, Why Choose Us, Success Counter (Total registered users, grooms, brides, happy families), Membership Plans Preview, Testimonials, FAQ, Contact Section, Footer.
-  2. **Login Page**: Beautiful UI, Mobile/Email input, Password input, Remember me, Forgot Password link, Login button, Register link.
-  3. **Registration Page**: Comprehensive 14+ fields professional form (Profile Created For, Gender, Full Name, Date of Birth, Age, Religion, Community, Education, Occupation, State, District, Mobile, Email, Password, Confirm Password) without backend validation.
-  4. **Search Page**: Interactive UI with sidebar filters (Gender, Age From/To, Religion, Community, Education, Occupation, State, District), and profile cards displaying Photo, Name, Age, Education, Occupation, State, District, Short Introduction, Hidden Contact Number/Email with Show/Hide toggle, View Profile modal, and Send Interest action.
+## Core Requirements (Static)
+- User can register, log in, edit their entire matrimonial profile, upload up to 3 photos.
+- Advanced privacy controls (hide phone/email/whatsapp/location, profile visibility, who-can-view).
+- Recommendation engine: weighted score across Age, Religion, Community, MotherTongue, MaritalStatus, Education, Occupation, State, City, Height, PartnerPreferences, Completeness.
+- Advanced search over the same field set.
+- All data persisted in MongoDB.
 
-## What's Been Implemented (Date: July 2026)
-- Fully functional React frontend with React Router for seamless client-side routing.
-- Responsive Navbar & Footer components with brand identity.
-- Pre-populated realistic Indian community mock profiles (`mock.js`).
-- Complete Home Page with all 13 specified sections and interactive FAQ accordions & contact form.
-- Complete Login Page with interactive success state.
-- Complete Registration Page with 14+ fields and success state.
-- Complete Search Page with filtering sidebar, hidden contact reveal toggle, View Profile popup modal, and Interest counters.
+## Implemented (2026-02-07)
+- Backend
+  - JWT auth with Bearer + cookie fallback; login returns access_token in body.
+  - PUT /api/users/profile (whitelisted fields), GET /api/users/completion.
+  - Photo APIs: upload (Emergent Object Storage), delete, set-primary; max 3 photos, 5MB, image only.
+  - GET /api/recommendations — weighted compatibility, opposite-gender, respects privacy & blocking.
+  - GET /api/profiles/search — 13 filters, compatibility-sorted.
+  - Block/unblock/report/delete-account endpoints.
+  - Sample 8 matrimonial candidates seeded at startup for real recommendations & search.
+- Frontend
+  - AuthContext with axios interceptor (Bearer token). ProtectedRoute for /dashboard and /search.
+  - LoginPage now redirects to /dashboard on success.
+  - DashboardPage: 9 sidebar sections, completion % header, photo gallery with upload/primary/delete, Recommended For You grid with match badges.
+  - SearchPage: advanced filter sidebar, real backend query, compatibility badges, contact-hidden toggle, detail modal.
+  - Poppins font globally.
+- Tests: 15/15 pytest backend + full Playwright UI pass (iteration_2.json).
 
-## Mocked in Frontend
-- All profile data and search results.
-- Authentication & registration state handling.
-- Contact reveal and interest sending simulation.
+## Prioritized Backlog
+- P1: Interest send/accept flow (currently visual only) — persist to DB; unlock contact when accepted.
+- P1: Real-time chat between mutually interested users.
+- P1: Horoscope PDF upload + optional AI kundali matching.
+- P2: Premium membership + Stripe integration (contact reveal, priority ranking).
+- P2: Notifications (email/WhatsApp) for new matches.
+- P2: Verification badges (Aadhaar/PAN) with an admin queue.
 
-## Prioritized Backlog & Phase-2 Future Recommendations
-- **Phase-2 Backend**: Wire FastAPI backend with MongoDB for persistent user profiles.
-- **Authentication**: Implement JWT authentication and OTP-based mobile verification.
-- **Chat & Messaging**: Add real-time chat between connected matches.
-- **Payment Gateway**: Integrate Stripe / Razorpay for premium membership plan upgrades.
-- **AI Matchmaking**: Add AI-powered compatibility percentage matching.
-
-## Commands to Run
-```bash
-cd /app/frontend
-yarn install
-yarn start
-```
+## Notes for Next Agent
+- Auth is Bearer-based (localStorage key `truejodi_access_token`); do NOT re-introduce withCredentials cookies — ingress rewrites CORS to `*`.
+- Photo URL helper is `photoUrl()` in AuthContext; external URLs pass through as-is, storage paths route via `/api/files/{path}`.
+- Compatibility weights are centralised in `COMPATIBILITY_WEIGHTS` (server.py) and easy to tweak.
