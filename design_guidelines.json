@@ -1,0 +1,29 @@
+{
+  "app_type": "frontend_saas_app",
+  "theme": "light",
+  "typography": {
+    "heading": "Playfair Display",
+    "body": "Plus Jakarta Sans"
+  },
+  "colors": {
+    "primary": "#8E2843",
+    "secondary": "#C84B65",
+    "accent": "#F4D03F",
+    "background": "#FFFBFB",
+    "surface": "#FFFFFF",
+    "text_primary": "#2D1520",
+    "text_secondary": "#6B4C58",
+    "border": "#F0D6DE"
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-xl bg-white/80 border border-white/40 shadow-[0_8px_32px_rgba(142,40,67,0.06)]",
+    "card_style": "bg-white rounded-2xl border border-[#F0D6DE] shadow-sm hover:shadow-md transition-all duration-300",
+    "button_style": "rounded-full bg-gradient-to-r from-[#8E2843] to-[#C84B65] text-white font-medium px-6 py-3 shadow-md hover:opacity-95 transition-all active:scale-95"
+  },
+  "image_urls": {
+    "hero_couple": "https://images.unsplash.com/photo-1665960213508-48f07086d49c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwzfHxlbGVnYW50JTIwSW5kaWFuJTIwd2VkZGluZyUyMGNvdXBsZSUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NjA3NTEzM3ww&ixlib=rb-4.1.0&q=85",
+    "reception_decor": "https://images.unsplash.com/photo-1763553113332-800519753e40?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwyfHxsdXh1cnklMjB3ZWRkaW5nJTIwcmVjZXB0aW9uJTIwZmxvcmFsJTIwZGVjb3J8ZW58MHx8fHwxNzg2MDc1MTMzfDA&ixlib=rb-4.1.0&q=85",
+    "couple_indoor": "https://images.pexels.com/photos/19609201/pexels-photo-19609201.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+  },
+  "instructions_to_main_agent": "Build a stunning, fully-featured Truejodi Matrimony platform frontend in React with Home Page, Login Page, Registration Page, and Search Page. Ensure all components use Tailwind CSS, data-testid attributes for robust automated testing, interactive modals, advanced search filters with hidden contact blur/reveal state, 14+ fields professional registration form, and mock login state."
+}
