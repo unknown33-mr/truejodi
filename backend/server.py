@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 import bcrypt
 import jwt
+import re
 import requests
 from datetime import datetime, timezone, timedelta
 
@@ -868,12 +869,289 @@ async def respond_interest(interest_id: str, payload: dict, current_user: dict =
         {"id": interest_id},
         {"$set": {"status": new_status, "responded_at": datetime.now(timezone.utc)}}
     )
+    # Auto-create a private chat when accepted so both members can start talking on Truejodi
+    if new_status == "accepted":
+        await ensure_chat(interest["from_user_id"], interest["to_user_id"])
     return {"message": f"Interest {new_status}", "status": new_status}
 
 @api_router.get("/interests/status/{target_id}")
 async def get_interest_status(target_id: str, current_user: dict = Depends(get_current_user)):
     m = await get_interest_status_map(current_user["id"], [target_id])
     return m.get(target_id, {"status": "none", "direction": None, "interest_id": None})
+
+# ---------------------------------------------------------------------
+# Chat (Premium-only, on-platform only, contact-share protected)
+# ---------------------------------------------------------------------
+MAX_CONTACT_WARNINGS = 3
+BLOCK_DURATION_HOURS = 24
+
+# Contact-detail patterns — server-side enforcement
+PHONE_RE = re.compile(r"(?:(?:\+?\d[\s\-\.]*){8,}\d)")
+EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+\s*@\s*[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.I)
+URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)
+SOCIAL_RE = re.compile(
+    r"(?:instagram|insta|facebook|fb|telegram|whatsapp|wa\.me|t\.me|snapchat|snap|linkedin|twitter|signal|discord|skype|zalo|viber|line|kik)\b|@[a-z0-9_.]{3,}",
+    re.I,
+)
+
+def detect_contact_info(text: str) -> List[str]:
+    """Return a list of contact patterns matched. Empty = clean."""
+    if not text:
+        return []
+    hits: List[str] = []
+    # Strip spaces from digit-looking substrings to catch "9 8 7 6..." style bypasses
+    compact = re.sub(r"[\s\-\.]{0,3}", "", text) if any(c.isdigit() for c in text) else text
+    if PHONE_RE.search(text) or PHONE_RE.search(compact):
+        hits.append("phone")
+    if EMAIL_RE.search(text) or EMAIL_RE.search(compact):
+        hits.append("email")
+    if URL_RE.search(text):
+        hits.append("url")
+    if SOCIAL_RE.search(text):
+        hits.append("social")
+    return hits
+
+def _chat_key(a: str, b: str) -> str:
+    lo, hi = sorted([a, b])
+    return f"{lo}::{hi}"
+
+async def ensure_chat(user_a: str, user_b: str) -> dict:
+    """Get or create a private chat between two users."""
+    key = _chat_key(user_a, user_b)
+    existing = await db.chats.find_one({"key": key})
+    if existing:
+        return existing
+    doc = {
+        "id": str(uuid.uuid4()),
+        "key": key,
+        "participants": [user_a, user_b],
+        "created_at": datetime.now(timezone.utc),
+        "last_message_at": None,
+        "last_message_preview": None,
+        # Per-user state
+        "warnings": {user_a: 0, user_b: 0},        # contact-share warnings
+        "blocked_until": {user_a: None, user_b: None},  # iso strings when non-null
+    }
+    await db.chats.insert_one(doc)
+    return doc
+
+async def get_or_create_chat_for(current_user_id: str, target_id: str) -> dict:
+    """Only allow chat when there's an accepted interest between the two users."""
+    if current_user_id == target_id:
+        raise HTTPException(status_code=400, detail="Cannot chat with yourself")
+    accepted = await db.interests.find_one({
+        "status": "accepted",
+        "$or": [
+            {"from_user_id": current_user_id, "to_user_id": target_id},
+            {"from_user_id": target_id, "to_user_id": current_user_id},
+        ]
+    })
+    if not accepted:
+        raise HTTPException(status_code=403, detail="You can chat only after an interest is accepted by both members")
+    return await ensure_chat(current_user_id, target_id)
+
+def _serialize_chat(chat: dict, viewer_id: str, other_user: Optional[dict] = None) -> dict:
+    warnings = (chat.get("warnings") or {}).get(viewer_id, 0)
+    blocked_until_raw = (chat.get("blocked_until") or {}).get(viewer_id)
+    blocked_until_iso = None
+    is_blocked = False
+    if blocked_until_raw:
+        if isinstance(blocked_until_raw, datetime):
+            blocked_until_iso = blocked_until_raw.isoformat()
+            is_blocked = blocked_until_raw > datetime.now(timezone.utc)
+        else:
+            blocked_until_iso = str(blocked_until_raw)
+            try:
+                bu = datetime.fromisoformat(blocked_until_iso.replace("Z", "+00:00"))
+                is_blocked = bu > datetime.now(timezone.utc)
+            except Exception:
+                is_blocked = False
+    return {
+        "id": chat["id"],
+        "participants": chat["participants"],
+        "created_at": chat["created_at"].isoformat() if isinstance(chat.get("created_at"), datetime) else chat.get("created_at"),
+        "last_message_at": chat["last_message_at"].isoformat() if isinstance(chat.get("last_message_at"), datetime) else chat.get("last_message_at"),
+        "last_message_preview": chat.get("last_message_preview"),
+        "warnings": warnings,
+        "warnings_max": MAX_CONTACT_WARNINGS,
+        "blocked_until": blocked_until_iso,
+        "is_blocked": is_blocked,
+        "other_user": other_user,
+    }
+
+def _other_participant(chat: dict, viewer_id: str) -> str:
+    parts = chat.get("participants") or []
+    return next((p for p in parts if p != viewer_id), viewer_id)
+
+async def _require_premium(user: dict):
+    if not user.get("isPremium"):
+        raise HTTPException(status_code=402, detail="Chat is a premium feature. Upgrade to start conversations.")
+
+@api_router.get("/chats")
+async def list_chats(current_user: dict = Depends(get_current_user)):
+    cursor = db.chats.find({"participants": current_user["id"]}).sort("last_message_at", -1)
+    chats = await cursor.to_list(200)
+    results = []
+    for c in chats:
+        other_id = _other_participant(c, current_user["id"])
+        other = await db.users.find_one({"_id": other_id})
+        if not other:
+            continue
+        unlocked = await is_contact_unlocked(current_user["id"], other_id)
+        results.append(_serialize_chat(c, current_user["id"], other_user=serialize_user(other, viewer=current_user, unlocked_contact=unlocked)))
+    return {"chats": results, "is_premium": bool(current_user.get("isPremium"))}
+
+@api_router.post("/chats/open/{target_id}")
+async def open_chat(target_id: str, current_user: dict = Depends(get_current_user)):
+    await _require_premium(current_user)
+    chat = await get_or_create_chat_for(current_user["id"], target_id)
+    other = await db.users.find_one({"_id": target_id})
+    unlocked = await is_contact_unlocked(current_user["id"], target_id)
+    return _serialize_chat(chat, current_user["id"], other_user=serialize_user(other, viewer=current_user, unlocked_contact=unlocked))
+
+@api_router.get("/chats/{chat_id}")
+async def get_chat(chat_id: str, current_user: dict = Depends(get_current_user)):
+    chat = await db.chats.find_one({"id": chat_id})
+    if not chat or current_user["id"] not in (chat.get("participants") or []):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    other_id = _other_participant(chat, current_user["id"])
+    other = await db.users.find_one({"_id": other_id})
+    unlocked = await is_contact_unlocked(current_user["id"], other_id)
+    return _serialize_chat(chat, current_user["id"], other_user=serialize_user(other, viewer=current_user, unlocked_contact=unlocked))
+
+@api_router.get("/chats/{chat_id}/messages")
+async def list_messages(chat_id: str, since: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    chat = await db.chats.find_one({"id": chat_id})
+    if not chat or current_user["id"] not in (chat.get("participants") or []):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    q: Dict[str, Any] = {"chat_id": chat_id, "kind": {"$ne": "system_hidden"}}
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            q["created_at"] = {"$gt": since_dt}
+        except Exception:
+            pass
+    msgs = await db.messages.find(q).sort("created_at", 1).to_list(1000)
+    out = []
+    for m in msgs:
+        out.append({
+            "id": m["id"],
+            "chat_id": m["chat_id"],
+            "sender_id": m.get("sender_id"),
+            "kind": m.get("kind", "text"),  # text | warning | system
+            "content": m.get("content", ""),
+            "flagged_reasons": m.get("flagged_reasons"),
+            "created_at": m["created_at"].isoformat() if isinstance(m.get("created_at"), datetime) else m.get("created_at"),
+        })
+    return {"messages": out}
+
+@api_router.post("/chats/{chat_id}/messages")
+async def send_message(chat_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    await _require_premium(current_user)
+    chat = await db.chats.find_one({"id": chat_id})
+    if not chat or current_user["id"] not in (chat.get("participants") or []):
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    viewer_id = current_user["id"]
+    # Check block window
+    blocked_map = chat.get("blocked_until") or {}
+    bu_raw = blocked_map.get(viewer_id)
+    if bu_raw:
+        bu = bu_raw if isinstance(bu_raw, datetime) else datetime.fromisoformat(str(bu_raw).replace("Z", "+00:00"))
+        if bu > datetime.now(timezone.utc):
+            raise HTTPException(status_code=403, detail=f"You are blocked from this chat until {bu.isoformat()} due to sharing contact details")
+
+    content = (payload or {}).get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content cannot be empty")
+    if len(content) > 2000:
+        raise HTTPException(status_code=400, detail="Message too long (max 2000 chars)")
+
+    # Contact-share detection
+    hits = detect_contact_info(content)
+    now = datetime.now(timezone.utc)
+    if hits:
+        warnings_map = chat.get("warnings") or {}
+        new_count = int(warnings_map.get(viewer_id, 0)) + 1
+        warnings_map[viewer_id] = new_count
+        set_update: Dict[str, Any] = {"warnings": warnings_map}
+        blocked_iso = None
+        if new_count >= MAX_CONTACT_WARNINGS:
+            block_until = now + timedelta(hours=BLOCK_DURATION_HOURS)
+            blocked_map[viewer_id] = block_until
+            set_update["blocked_until"] = blocked_map
+            blocked_iso = block_until.isoformat()
+        await db.chats.update_one({"id": chat_id}, {"$set": set_update})
+
+        # Store a warning message visible to the sender only
+        warning_doc = {
+            "id": str(uuid.uuid4()),
+            "chat_id": chat_id,
+            "sender_id": None,
+            "kind": "warning",
+            "content": (
+                f"Contact details detected ({', '.join(hits)}). "
+                f"Warning {new_count} of {MAX_CONTACT_WARNINGS}. "
+                + ("You have been blocked from chatting here for 24 hours." if new_count >= MAX_CONTACT_WARNINGS
+                   else "Please keep conversations on Truejodi. Contact sharing is not allowed.")
+            ),
+            "audience_user_id": viewer_id,
+            "created_at": now,
+            "flagged_reasons": hits,
+        }
+        await db.messages.insert_one(warning_doc)
+        return {
+            "message": "Message rejected — contact details are not allowed",
+            "delivered": False,
+            "warning": True,
+            "warnings": new_count,
+            "warnings_max": MAX_CONTACT_WARNINGS,
+            "blocked_until": blocked_iso,
+            "flagged_reasons": hits,
+            "warning_message": {
+                "id": warning_doc["id"],
+                "kind": "warning",
+                "content": warning_doc["content"],
+                "created_at": now.isoformat(),
+                "flagged_reasons": hits,
+            }
+        }
+
+    # Clean message — persist and update chat preview
+    msg = {
+        "id": str(uuid.uuid4()),
+        "chat_id": chat_id,
+        "sender_id": viewer_id,
+        "kind": "text",
+        "content": content,
+        "created_at": now,
+    }
+    await db.messages.insert_one(msg)
+    await db.chats.update_one(
+        {"id": chat_id},
+        {"$set": {"last_message_at": now, "last_message_preview": content[:120]}}
+    )
+    return {
+        "message": "delivered",
+        "delivered": True,
+        "warnings": (chat.get("warnings") or {}).get(viewer_id, 0),
+        "warnings_max": MAX_CONTACT_WARNINGS,
+        "sent_message": {
+            "id": msg["id"],
+            "chat_id": chat_id,
+            "sender_id": viewer_id,
+            "kind": "text",
+            "content": content,
+            "created_at": now.isoformat(),
+        }
+    }
+
+# Premium toggle — demo endpoint (no payment integration in this phase)
+@api_router.post("/users/premium/toggle")
+async def toggle_premium(current_user: dict = Depends(get_current_user)):
+    new_val = not bool(current_user.get("isPremium"))
+    await db.users.update_one({"_id": current_user["id"]}, {"$set": {"isPremium": new_val}})
+    return {"isPremium": new_val, "message": "Premium enabled" if new_val else "Premium disabled"}
 
 # ---------------------------------------------------------------------
 # Recommendations & Search
