@@ -40,8 +40,18 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 def get_cors_origins() -> list[str]:
-    raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000")
-    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    raw = os.environ.get(
+        "CORS_ORIGINS",
+        "https://truejodi-frontend.onrender.com,https://unknown33-mr.github.io"
+    )
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
+    # Always allow the current production frontend.
+    production_frontend = "https://truejodi-frontend.onrender.com"
+    if production_frontend not in origins:
+        origins.append(production_frontend)
+
+    return origins
 
 JWT_ALGORITHM = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "truejodi-matrimony")
