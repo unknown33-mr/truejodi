@@ -1,7 +1,6 @@
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, status, Depends, UploadFile, File, Query, Header
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
@@ -11,86 +10,67 @@ import uuid
 import bcrypt
 import jwt
 import re
-import requests
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from database import client, db, ensure_indexes, verify_database_connection
 
-app = FastAPI()
+PRODUCTION_MODE = os.environ.get("PRODUCTION_MODE", "false").strip().lower() == "true"
+
+app = FastAPI(
+    title="TrueJodi API",
+    version="1.0.0",
+    docs_url="/docs" if not PRODUCTION_MODE else None,
+    redoc_url="/redoc" if not PRODUCTION_MODE else None,
+)
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def get_cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000")
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
+JWT_ALGORITHM = "HS256"
 APP_NAME = os.environ.get("APP_NAME", "truejodi-matrimony")
 MAX_PHOTOS_PER_USER = 3
+SECURE_COOKIES = env_bool("SECURE_COOKIES", PRODUCTION_MODE)
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
+if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    COOKIE_SAMESITE = "lax"
 
 # ---------------------------------------------------------------------
-# Object Storage (Emergent Integrations)
+# Portable File Storage
 # ---------------------------------------------------------------------
-STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
-STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
-storage_key: Optional[str] = None
-
-def init_storage(force: bool = False) -> Optional[str]:
-    global storage_key
-    if storage_key and not force:
-        return storage_key
-    if not EMERGENT_KEY:
-        logger.warning("EMERGENT_LLM_KEY not set — object storage disabled")
-        return None
-    try:
-        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
-        resp.raise_for_status()
-        storage_key = resp.json()["storage_key"]
-        return storage_key
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
-        return None
-
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage service unavailable")
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120
-    )
-    if resp.status_code == 404:
-        key = init_storage(force=True)
-        resp = requests.put(
-            f"{STORAGE_URL}/objects/{path}",
-            headers={"X-Storage-Key": key, "Content-Type": content_type},
-            data=data, timeout=120
-        )
-    resp.raise_for_status()
-    return resp.json()
-
-def get_object(path: str):
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage service unavailable")
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    if resp.status_code == 404:
-        key = init_storage(force=True)
-        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+from storage import (
+    ensure_storage_dir,
+    put_object,
+    get_object,
+    delete_object,
+)
 
 # ---------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------
 def get_jwt_secret() -> str:
-    return os.environ.get("JWT_SECRET", "fallback_secret_key")
+    secret = os.environ.get("JWT_SECRET", "").strip()
+    if not secret:
+        raise RuntimeError("JWT_SECRET is required. Set it in backend/.env or the server environment.")
+    if PRODUCTION_MODE and len(secret) < 32:
+        raise RuntimeError("JWT_SECRET must be at least 32 characters when PRODUCTION_MODE=true.")
+    return secret
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -112,6 +92,11 @@ async def get_current_user(request: Request) -> dict:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+    # <img> requests cannot attach an Authorization header. The frontend
+    # therefore uses the short-lived access token as a query parameter when
+    # loading protected photos. Keep the normal cookie/header methods first.
+    if not token:
+        token = request.query_params.get("token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -415,13 +400,17 @@ def serialize_user(user: dict, viewer: Optional[dict] = None, unlocked_contact: 
 # ---------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_db():
+    ensure_storage_dir()
     try:
-        await db.users.create_index("email", unique=True)
-        # Init storage
-        init_storage()
+        await verify_database_connection()
+        await ensure_indexes()
         # Seed admin user
-        admin_email = os.environ.get("ADMIN_EMAIL", "admin@truejodi.com")
-        admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+        admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+        admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
+        if not admin_email or not admin_password:
+            raise RuntimeError("ADMIN_EMAIL and ADMIN_PASSWORD are required for backend startup.")
+        if PRODUCTION_MODE and len(admin_password) < 12:
+            raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters when PRODUCTION_MODE=true.")
         existing = await db.users.find_one({"email": admin_email})
         if not existing:
             await db.users.insert_one({
@@ -435,69 +424,74 @@ async def startup_db():
                 "created_at": datetime.now(timezone.utc)
             })
             logger.info("Admin user seeded successfully.")
-        # Seed test user
-        test_email = "testuser@truejodi.com"
-        if not await db.users.find_one({"email": test_email}):
-            await db.users.insert_one({
-                "_id": str(uuid.uuid4()),
-                "fullName": "Test User",
-                "email": test_email,
-                "password_hash": hash_password("testpass123"),
-                "gender": "Female",
-                "age": 26,
-                "religion": "Hindu",
-                "community": "Brahmin",
-                "motherTongue": "Hindi",
-                "maritalStatus": "Never Married",
-                "height": "5 ft 5 in",
-                "education": "B.Tech",
-                "occupation": "Software Engineer",
-                "state": "Maharashtra",
-                "district": "Mumbai",
-                "mobile": "9876543210",
-                "role": "user",
-                "photos": [],
-                "partnerPreferences": {"ageFrom": 26, "ageTo": 32, "religion": "Hindu"},
-                "privacySettings": {"hideMobile": True, "hideEmail": True, "profileVisibility": "Public"},
-                "created_at": datetime.now(timezone.utc)
-            })
-            logger.info("Test user seeded.")
+        # Seed test/demo data only when explicitly enabled.
+        if env_bool("ENABLE_DEMO_SEED", False):
+            # Seed test user
+            test_email = "testuser@truejodi.com"
+            if not await db.users.find_one({"email": test_email}):
+                await db.users.insert_one({
+                    "_id": str(uuid.uuid4()),
+                    "fullName": "Test User",
+                    "email": test_email,
+                    "password_hash": hash_password("testpass123"),
+                    "gender": "Female",
+                    "age": 26,
+                    "religion": "Hindu",
+                    "community": "Brahmin",
+                    "motherTongue": "Hindi",
+                    "maritalStatus": "Never Married",
+                    "height": "5 ft 5 in",
+                    "education": "B.Tech",
+                    "occupation": "Software Engineer",
+                    "state": "Maharashtra",
+                    "district": "Mumbai",
+                    "mobile": "9876543210",
+                    "role": "user",
+                    "photos": [],
+                    "partnerPreferences": {"ageFrom": 26, "ageTo": 32, "religion": "Hindu"},
+                    "privacySettings": {"hideMobile": True, "hideEmail": True, "profileVisibility": "Public"},
+                    "created_at": datetime.now(timezone.utc)
+                })
+                logger.info("Test user seeded.")
 
-        # Seed sample matrimonial candidates for search & recommendations
-        from mock_seed import SAMPLE_USERS
-        for s in SAMPLE_USERS:
-            if await db.users.find_one({"email": s["email"]}):
-                continue
-            uid = str(uuid.uuid4())
-            photo_id = str(uuid.uuid4())
-            doc = {
-                "_id": uid,
-                "password_hash": hash_password("Password@123"),
-                "role": "user",
-                "profileFor": "Self",
-                "photos": [{
-                    "id": photo_id,
-                    "storage_path": s["primary_photo_url"],
-                    "content_type": "image/jpeg",
-                    "is_primary": True,
-                    "is_external": True,
-                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                }],
-                "partnerPreferences": {},
-                "privacySettings": {
-                    "hideMobile": True, "hideEmail": True, "hideWhatsapp": True,
-                    "hidePhotos": False, "profileVisibility": "Public",
-                    "whoCanView": "Everyone", "showLastSeen": True, "hideOnlineStatus": False,
-                    "hideLocation": False,
-                },
-                "blockedUsers": [],
-                "created_at": datetime.now(timezone.utc),
-                **{k: v for k, v in s.items() if k != "primary_photo_url"},
-            }
-            await db.users.insert_one(doc)
-        logger.info("Sample matrimonial candidates seeded.")
+        if env_bool("ENABLE_DEMO_SEED", False):
+            # Seed sample matrimonial candidates for development/demo only.
+            from mock_seed import SAMPLE_USERS
+            for s in SAMPLE_USERS:
+                if await db.users.find_one({"email": s["email"]}):
+                    continue
+                uid = str(uuid.uuid4())
+                photo_id = str(uuid.uuid4())
+                doc = {
+                    "_id": uid,
+                    "password_hash": hash_password("Password@123"),
+                    "role": "user",
+                    "profileFor": "Self",
+                    "photos": [{
+                        "id": photo_id,
+                        "storage_path": s["primary_photo_url"],
+                        "content_type": "image/jpeg",
+                        "is_primary": True,
+                        "is_external": True,
+                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    }],
+                    "partnerPreferences": {},
+                    "privacySettings": {
+                        "hideMobile": True, "hideEmail": True, "hideWhatsapp": True,
+                        "hidePhotos": False, "profileVisibility": "Public",
+                        "whoCanView": "Everyone", "showLastSeen": True, "hideOnlineStatus": False,
+                        "hideLocation": False,
+                    },
+                    "blockedUsers": [],
+                    "created_at": datetime.now(timezone.utc),
+                    **{k: v for k, v in s.items() if k != "primary_photo_url"},
+                }
+                await db.users.insert_one(doc)
+            logger.info("Sample matrimonial candidates seeded.")
     except Exception as e:
-        logger.error(f"Startup db error: {e}")
+        logger.exception("Startup database/bootstrap error: %s", e)
+        if PRODUCTION_MODE:
+            raise
 
 # ---------------------------------------------------------------------
 # Auth Endpoints
@@ -547,22 +541,26 @@ async def register(input: UserRegister, response: Response):
     access_token = create_access_token(user_id, email_norm)
     refresh_token = create_refresh_token(user_id)
 
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=86400, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=SECURE_COOKIES, samesite=COOKIE_SAMESITE, max_age=86400, path="/")
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=SECURE_COOKIES, samesite=COOKIE_SAMESITE, max_age=604800, path="/")
 
     return {"message": "Registration successful", "user": serialize_user(user_doc, viewer={"id": user_id}), "access_token": access_token, "token_type": "Bearer"}
 
 @api_router.post("/auth/login")
 async def login(input: UserLogin, response: Response):
-    email_norm = input.email.lower().strip()
+    identifier = input.email.strip()
+    email_norm = identifier.lower()
     user = await db.users.find_one({"email": email_norm})
+    if not user and identifier:
+        user = await db.users.find_one({"mobile": identifier})
     if not user or not verify_password(input.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
+        raise HTTPException(status_code=400, detail="Invalid email/mobile or password")
     user_id = user["_id"]
-    access_token = create_access_token(user_id, email_norm)
+    user_email = str(user.get("email", email_norm)).lower()
+    access_token = create_access_token(user_id, user_email)
     refresh_token = create_refresh_token(user_id)
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=86400, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=SECURE_COOKIES, samesite=COOKIE_SAMESITE, max_age=86400, path="/")
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=SECURE_COOKIES, samesite=COOKIE_SAMESITE, max_age=604800, path="/")
     return {"message": "Login successful", "user": serialize_user(user, viewer={"id": user_id}), "access_token": access_token, "token_type": "Bearer"}
 
 @api_router.get("/auth/me")
@@ -644,7 +642,23 @@ async def upload_photo(file: UploadFile = File(...), current_user: dict = Depend
     data = await file.read()
     if len(data) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="Image exceeds 5MB limit")
-    ext = (file.filename or "img").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "jpg"
+    # Validate the file signature instead of trusting the client-supplied extension.
+    signatures = {
+        "image/jpeg": data.startswith(b"\xff\xd8\xff"),
+        "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/gif": data.startswith((b"GIF87a", b"GIF89a")),
+        "image/webp": len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
+    }
+    if not signatures.get(content_type, False):
+        raise HTTPException(status_code=400, detail="Invalid or corrupted image file.")
+    extension_by_type = {
+        "image/jpeg": "jpg",
+        "image/jpg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }
+    ext = extension_by_type[content_type]
     photo_id = str(uuid.uuid4())
     path = f"{APP_NAME}/uploads/{user_id}/{photo_id}.{ext}"
     result = put_object(path, data, content_type)
@@ -678,7 +692,10 @@ async def delete_photo(photo_id: str, current_user: dict = Depends(get_current_u
     # If we deleted primary, promote the first remaining
     if not any(p.get("is_primary") for p in new_photos) and new_photos:
         new_photos[0]["is_primary"] = True
-    await db.files.update_one({"id": photo_id, "user_id": user_id}, {"$set": {"is_deleted": True}})
+    record = await db.files.find_one({"id": photo_id, "user_id": user_id, "is_deleted": False})
+    if record and record.get("storage_path"):
+        delete_object(record["storage_path"])
+    await db.files.update_one({"id": photo_id, "user_id": user_id}, {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc)}})
     await db.users.update_one({"_id": user_id}, {"$set": {"photos": new_photos}})
     return {"message": "Photo deleted", "photos": new_photos}
 
@@ -700,12 +717,34 @@ async def set_primary_photo(photo_id: str, current_user: dict = Depends(get_curr
     return {"message": "Primary photo updated", "photos": photos}
 
 @api_router.get("/files/{path:path}")
-async def download_file(path: str, request: Request):
+async def download_file(path: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Serve stored photos only to authenticated users with privacy checks."""
     record = await db.files.find_one({"storage_path": path, "is_deleted": False})
     if not record:
         raise HTTPException(status_code=404, detail="File not found")
-    data, content_type = get_object(path)
-    return Response(content=data, media_type=record.get("content_type", content_type))
+
+    owner_id = str(record.get("user_id", ""))
+    viewer_id = str(current_user.get("id", ""))
+    if owner_id != viewer_id:
+        owner = await db.users.find_one({"_id": owner_id})
+        if not owner:
+            raise HTTPException(status_code=404, detail="File owner not found")
+        privacy = owner.get("privacySettings") or {}
+        if privacy.get("hidePhotos", False):
+            raise HTTPException(status_code=403, detail="This user's photos are private.")
+        blocked = set(owner.get("blockedUsers") or [])
+        if viewer_id in blocked:
+            raise HTTPException(status_code=403, detail="Photo access denied.")
+
+    try:
+        data = get_object(path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Stored file not found")
+    return Response(
+        content=data,
+        media_type=record.get("content_type", "application/octet-stream"),
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 # ---------------------------------------------------------------------
 # Blocking & Reporting
@@ -1316,14 +1355,52 @@ async def create_profile(profile: ProfileModel):
     await db.profiles.update_one({"id": doc["id"]}, {"$set": doc}, upsert=True)
     return profile
 
+@api_router.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "service": "truejodi-matrimony",
+        "version": "1.0.0"
+    }
+
+
+@api_router.get("/health/database")
+async def database_health():
+    """Return a simple database connectivity status for deployment checks."""
+    try:
+        await verify_database_connection()
+        return {
+            "status": "ok",
+            "database": os.environ.get("DB_NAME")
+        }
+    except Exception as exc:
+        logger.error("MongoDB health check failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable"
+        )
+
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if PRODUCTION_MODE:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origin_regex=r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|.*\.preview\.emergentagent\.com|.*\.emergentagent\.com)$",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=get_cors_origins(),
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 @app.on_event("shutdown")
