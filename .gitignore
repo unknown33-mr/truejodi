@@ -87,3 +87,8 @@ credentials.json
 *.key
 .credentials
 archive.zip
+
+# Safe environment templates (no real secrets)
+!.env.example
+!backend/.env.example
+!frontend/.env.example

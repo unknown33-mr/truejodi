@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: truejodi-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health/database
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: APP_NAME
+        value: truejodi-matrimony
+      - key: DB_NAME
+        value: truejodi
+      - key: MONGO_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://truejodi-frontend.onrender.com,https://unknown33-mr.github.io
+      - key: PRODUCTION_MODE
+        value: "true"
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: lax
+      - key: ENABLE_DEMO_SEED
+        value: "false"
+      - key: STORAGE_PROVIDER
+        value: local
+      - key: UPLOAD_DIR
+        value: /opt/render/project/src/uploads
+      - key: MONGO_SERVER_SELECTION_TIMEOUT_MS
+        value: "10000"
+      - key: MONGO_CONNECT_TIMEOUT_MS
+        value: "10000"
+      - key: MONGO_MAX_POOL_SIZE
+        value: "50"
+      - key: MONGO_MIN_POOL_SIZE
+        value: "0"
+    disk:
+      name: truejodi-uploads
+      mountPath: /opt/render/project/src/uploads
+      sizeGB: 10
