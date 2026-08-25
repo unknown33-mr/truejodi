@@ -63,7 +63,7 @@ async def verify_database_connection() -> None:
 
 async def ensure_indexes() -> None:
     """Create application indexes that are safe to recreate on startup."""
-    await db.users.create_index("email", unique=True, name="users_email_unique")
+    await db.users.create_index("email", unique=True)
     await db.interests.create_index(
         [("from_user_id", 1), ("to_user_id", 1)],
         name="interests_from_to",
