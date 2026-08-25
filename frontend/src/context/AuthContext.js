@@ -3,7 +3,14 @@ import axios from 'axios';
 
 const AuthContext = createContext(null);
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
+const DEFAULT_BACKEND_URL =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'truejodi-frontend.onrender.com' ||
+    window.location.hostname === 'unknown33-mr.github.io')
+    ? 'https://truejodi.onrender.com'
+    : 'http://localhost:8001';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || DEFAULT_BACKEND_URL;
 const TOKEN_KEY = 'truejodi_access_token';
 
 // Configure axios once with an interceptor that injects the Bearer token
@@ -88,5 +95,7 @@ export function photoUrl(photo) {
   const path = typeof photo === 'string' ? photo : (photo.storage_path || photo.url);
   if (!path) return '';
   if (/^https?:\/\//i.test(path)) return path;
-  return `${BACKEND_URL}/api/files/${path}`;
+  const token = localStorage.getItem(TOKEN_KEY);
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${BACKEND_URL}/api/files/${path}${query}`;
 }
